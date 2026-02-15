@@ -12,14 +12,17 @@ fi
 recdir="$HOME/.shellrecorder/recordings"
 mkdir -p "$recdir"
 
-file="${1:-rec_$(date +%Y%m%d_%H%M%S).txt}"
-[[ "$file" != /* ]] && file="$recdir/$file"
+name="${1:-rec_$(date +%Y%m%d_%H%M%S)}"
+name="${name%.txt}"
+name="${name%.md}"
+name="${name%.raw}"
+[[ "$name" != /* ]] && name="$recdir/$name"
 
 tmp=$(mktemp "${TMPDIR:-/tmp}/shellrec.XXXXXX")
 rcdir=$(mktemp -d "${TMPDIR:-/tmp}/shellrec_rc.XXXXXX")
 shell_name=$(basename "$SHELL")
 
-rawfile="${file%.txt}.raw"
+rawfile="${name}.raw"
 
 cleanup() { rm -rf "$rcdir"; }
 trap cleanup EXIT
@@ -47,7 +50,7 @@ INNER
     ;;
 esac
 
-printf 'Recording → %s\n' "$file"
+printf 'Recording → %s\n' "$name"
 printf 'Type "stoprec" when done.\n'
 
 # Start recording
@@ -68,7 +71,11 @@ case "$shell_name" in
     ;;
 esac
 
+# Save raw capture
+cp "$tmp" "$rawfile"
+
 # Strip escape sequences, simulate carriage returns, clean backspaces
+cleaned=$(mktemp "${TMPDIR:-/tmp}/shellrec_clean.XXXXXX")
 perl -pe '
   s/\e\[ [?>=<]* [0-9;]* [a-zA-Z~]//gx;   # CSI sequences (colors, modes, cursor)
   s/\e\] .*? (?:\a|\e\\)//gx;              # OSC sequences (titles, hyperlinks)
@@ -76,24 +83,27 @@ perl -pe '
   s/\e[a-zA-Z]//g;                         # two-char escapes
   s/\r+$//;                                 # strip trailing \r (before newline)
   s/^.*\r//;                                # carriage return overwrites: keep text after last \r
-' < "$tmp" | col -b > "$file"
+' < "$tmp" | col -b > "$cleaned"
 
-cp "$tmp" "$rawfile"
 rm -f "$tmp"
 
-printf 'Saved → %s (%s lines)\n' "$file" "$(wc -l < "$file" | tr -d ' ')"
-printf 'Raw   → %s\n' "$rawfile"
-
-# Merge Claude Code sessions inline if detected
-if grep -qE 'claude --resume [0-9a-f-]{36}' "$file" 2>/dev/null; then
-  mdfile="${file%.txt}.md"
+# Merge: if Claude Code sessions detected, produce .md with transcripts inline
+# Otherwise, save cleaned terminal output as .md
+outfile="${name}.md"
+if grep -qE 'claude --resume [0-9a-f-]{36}' "$cleaned" 2>/dev/null; then
   rec_dir="$(cd "$(dirname "$0")" && pwd)"
   if [ -x "$rec_dir/clauderec" ]; then
-    "$rec_dir/clauderec" --merge "$file" > "$mdfile"
+    "$rec_dir/clauderec" --merge "$cleaned" > "$outfile"
   elif command -v clauderec >/dev/null 2>&1; then
-    clauderec --merge "$file" > "$mdfile"
+    clauderec --merge "$cleaned" > "$outfile"
+  else
+    cp "$cleaned" "$outfile"
   fi
-  if [ -s "$mdfile" ]; then
-    printf 'Merged → %s\n' "$mdfile"
-  fi
+else
+  cp "$cleaned" "$outfile"
 fi
+
+rm -f "$cleaned"
+
+printf 'Saved → %s\n' "$outfile"
+printf 'Raw   → %s\n' "$rawfile"
