@@ -1,6 +1,6 @@
 # shellrecorder
 
-Record terminal sessions to clean text files. Two commands: `rec` and `stoprec`.
+Record terminal sessions to clean, readable files. Includes first-class support for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions.
 
 ## Install
 
@@ -12,7 +12,7 @@ brew install jamesrisberg/shellrecorder/shellrecorder
 
 ```bash
 rec              # start recording (auto-named with timestamp)
-rec myfile.txt   # start recording to a specific file
+rec mysession    # start recording with a specific name
 
 # ... do whatever you want ...
 
@@ -21,13 +21,46 @@ stoprec          # stop and save
 
 Recordings are saved to `~/.shellrecorder/recordings/` by default. Pass an absolute path to save elsewhere.
 
-## What it does
+Each recording produces two files:
+- `.md` — clean, readable output (terminal commands + output, Claude Code sessions rendered as markdown)
+- `.raw` — raw terminal capture
 
-`rec` starts a recording session using the Unix `script` command. Everything you type and see in the terminal is captured. When you run `stoprec`, the session ends and the output is cleaned — ANSI escape codes, control characters, and terminal artifacts are stripped — leaving you with a readable text file.
+## Claude Code support
 
-## Limitations
+If you run Claude Code during a recording, shellrecorder automatically detects the session and replaces the raw TUI output with a clean transcript. The result is a single `.md` file with everything in chronological order:
 
-TUI applications (Claude Code, vim, htop, etc.) won't produce clean output. These apps redraw the screen using cursor positioning, which can't be reconstructed into linear text. Handling specific TUI cases like Claude Code is on the roadmap.
+````
+```
+(base) user@host ~ % ls
+file1.txt  file2.txt
+(base) user@host ~ % claude
+```
+
+### Claude Code — claude-opus-4-6
+
+**User:** explain this codebase
+
+Here's an overview of the project...
+
+> **Glob** `**/*` in `.`
+> **Read** `src/main.py`
+
+The main entry point is...
+
+```
+(base) user@host ~ % echo "back to terminal"
+back to terminal
+```
+````
+
+You can also render any Claude Code session directly:
+
+```bash
+clauderec <session-id>    # render a session by ID
+clauderec <path.jsonl>    # render from a JSONL file
+```
+
+Session IDs are printed at the end of every Claude Code session (`claude --resume <id>`).
 
 ## Shell support
 
