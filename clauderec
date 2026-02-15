@@ -176,15 +176,12 @@ def merge(clean_text_path):
     last_end = 0
 
     for marker_line, session_id in markers:
-        # Scan backwards from marker past blank lines to find where Claude started
+        # Find where Claude was launched: scan backwards for a prompt line ending with `claude`
         start = marker_line
-        while start > last_end and lines[start - 1].strip() == "":
-            start -= 1
-
-        # Consume adjacent non-blank lines that are part of Claude's output
-        # (e.g. "Resume this session with:", prompt line with `claude` command)
-        while start > last_end and lines[start - 1].strip() != "":
-            start -= 1
+        for i in range(marker_line - 1, last_end - 1, -1):
+            if re.search(r"[%$#>]\s*claude\b", lines[i]):
+                start = i
+                break
 
         # Terminal section before this Claude session
         terminal_lines = lines[last_end:start]
@@ -200,10 +197,8 @@ def merge(clean_text_path):
             # Couldn't find JSONL — keep original text
             segments.append(("terminal", "\n".join(lines[start : marker_line + 1]).strip()))
 
-        # Advance past the marker line and any trailing blank lines
+        # Advance past the marker line
         last_end = marker_line + 1
-        while last_end < len(lines) and lines[last_end].strip() == "":
-            last_end += 1
 
     # Terminal section after the last Claude session
     terminal_text = "\n".join(lines[last_end:]).strip()
