@@ -83,3 +83,46 @@ rm -f "$tmp"
 
 printf 'Saved → %s (%s lines)\n' "$file" "$(wc -l < "$file" | tr -d ' ')"
 printf 'Raw   → %s\n' "$rawfile"
+
+# Detect Claude Code sessions and extract clean transcript
+session_id=$(grep -oE 'claude --resume [0-9a-f-]{36}' "$file" "$rawfile" 2>/dev/null | head -1 | grep -oE '[0-9a-f-]{36}')
+if [ -n "$session_id" ]; then
+  jsonl=$(find "$HOME/.claude/projects" -name "${session_id}.jsonl" 2>/dev/null | head -1)
+  if [ -n "$jsonl" ]; then
+    mdfile="${file%.txt}.md"
+    rec_dir="$(cd "$(dirname "$0")" && pwd)"
+    if [ -x "$rec_dir/clauderec" ]; then
+      "$rec_dir/clauderec" "$jsonl" > "$mdfile"
+    elif command -v clauderec >/dev/null 2>&1; then
+      clauderec "$jsonl" > "$mdfile"
+    else
+      python3 -c '
+import json, sys, os
+
+def render(path):
+    print("# Claude Code Session\n")
+    with open(path) as f:
+        for line in f:
+            obj = json.loads(line)
+            t = obj.get("type")
+            if t == "user":
+                msg = obj["message"]
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    print(f"## User\n\n{content.strip()}\n")
+            elif t == "assistant":
+                for block in obj["message"].get("content", []):
+                    if block["type"] == "text" and block.get("text", "").strip():
+                        print(block["text"].strip() + "\n")
+                    elif block["type"] == "tool_use":
+                        name = block["name"]
+                        inp = block.get("input", {})
+                        summary = ", ".join(f"{k}={json.dumps(v)[:80]}" for k, v in inp.items())
+                        print(f"**{name}** `{summary}`\n")
+
+render(sys.argv[1])
+' "$jsonl" > "$mdfile"
+    fi
+    printf 'Claude → %s\n' "$mdfile"
+  fi
+fi

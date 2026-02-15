@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""clauderec — render a Claude Code JSONL transcript as clean markdown"""
+
+import json
+import sys
+import os
+from datetime import datetime
+
+
+def format_timestamp(ts):
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, AttributeError):
+        return ts
+
+
+def render_tool_use(block):
+    name = block["name"]
+    inp = block.get("input", {})
+
+    # Compact summaries for common tools
+    if name == "Read":
+        return f"> **Read** `{inp.get('file_path', '')}`"
+    if name == "Write":
+        return f"> **Write** `{inp.get('file_path', '')}`"
+    if name == "Edit":
+        path = inp.get("file_path", "")
+        old = inp.get("old_string", "")[:60].replace("\n", "\\n")
+        return f"> **Edit** `{path}` — `{old}…`"
+    if name == "Glob":
+        return f"> **Glob** `{inp.get('pattern', '')}` in `{inp.get('path', '.')}`"
+    if name == "Grep":
+        return f"> **Grep** `{inp.get('pattern', '')}` in `{inp.get('path', '.')}`"
+    if name == "Bash":
+        cmd = inp.get("command", "")[:120]
+        return f"> **Bash** `{cmd}`"
+    if name == "Task":
+        desc = inp.get("description", "")
+        return f"> **Task** _{desc}_"
+    if name == "LSP":
+        op = inp.get("operation", "")
+        path = inp.get("filePath", "")
+        return f"> **LSP** `{op}` on `{path}`"
+
+    # Generic fallback
+    parts = ", ".join(f"{k}={json.dumps(v)[:80]}" for k, v in inp.items())
+    return f"> **{name}** `{parts}`"
+
+
+def render_tool_result(content):
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"
+        )
+    else:
+        return ""
+
+    lines = text.strip().split("\n")
+    if len(lines) > 20:
+        preview = "\n".join(lines[:10] + [f"  … ({len(lines) - 10} more lines)"])
+    else:
+        preview = "\n".join(lines)
+    return preview
+
+
+def render(path):
+    messages = []
+    meta = {}
+
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            t = obj.get("type")
+
+            if t == "user":
+                msg = obj["message"]
+                content = msg.get("content", "")
+
+                # Tool results — attach to previous assistant tool_use
+                if isinstance(content, list):
+                    for block in content:
+                        if block.get("type") == "tool_result":
+                            result_text = render_tool_result(block.get("content", ""))
+                            if result_text:
+                                messages.append(("tool_result", result_text))
+                    continue
+
+                if isinstance(content, str) and content.strip():
+                    ts = format_timestamp(obj.get("timestamp", ""))
+                    messages.append(("user", content.strip(), ts))
+
+            elif t == "assistant":
+                blocks = obj["message"].get("content", [])
+                ts = format_timestamp(obj.get("timestamp", ""))
+                model = obj["message"].get("model", "")
+
+                if not meta.get("model") and model:
+                    meta["model"] = model
+                if not meta.get("start"):
+                    meta["start"] = ts
+
+                for block in blocks:
+                    bt = block.get("type")
+                    if bt == "text":
+                        text = block.get("text", "").strip()
+                        if text:
+                            messages.append(("assistant_text", text))
+                    elif bt == "tool_use":
+                        messages.append(("tool_use", render_tool_use(block)))
+                    # skip thinking blocks — they're internal
+
+                meta["end"] = ts
+
+    # --- Render markdown ---
+    session_id = os.path.splitext(os.path.basename(path))[0]
+    print(f"# Claude Code Session")
+    if meta.get("model"):
+        print(f"**Model:** {meta['model']}")
+    if meta.get("start"):
+        print(f"**Started:** {meta['start']}")
+    print(f"**Session:** `{session_id}`\n")
+    print("---\n")
+
+    last_type = None
+    for item in messages:
+        kind = item[0]
+
+        if kind == "user":
+            _, text, ts = item
+            if last_type and last_type != "user":
+                print("---\n")
+            print(f"## User\n\n{text}\n")
+            last_type = "user"
+
+        elif kind == "assistant_text":
+            _, text = item
+            if last_type == "user" or last_type is None:
+                print(f"## Assistant\n")
+            print(f"{text}\n")
+            last_type = "assistant_text"
+
+        elif kind == "tool_use":
+            _, summary = item
+            print(f"{summary}\n")
+            last_type = "tool_use"
+
+        elif kind == "tool_result":
+            _, preview = item
+            if preview:
+                print(f"```\n{preview}\n```\n")
+            last_type = "tool_result"
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: clauderec <session.jsonl>", file=sys.stderr)
+        print("       clauderec <session-id>", file=sys.stderr)
+        sys.exit(1)
+
+    arg = sys.argv[1]
+
+    # Accept either a path or a bare session ID
+    if os.path.isfile(arg):
+        render(arg)
+    else:
+        # Search for the session ID
+        claude_dir = os.path.expanduser("~/.claude/projects")
+        found = None
+        for root, dirs, files in os.walk(claude_dir):
+            for f in files:
+                if f == f"{arg}.jsonl":
+                    found = os.path.join(root, f)
+                    break
+            if found:
+                break
+        if found:
+            render(found)
+        else:
+            print(f"No JSONL found for session: {arg}", file=sys.stderr)
+            sys.exit(1)
