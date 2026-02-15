@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""clauderec — render a Claude Code JSONL transcript as clean markdown"""
+"""clauderec — render Claude Code transcripts, merge with terminal recordings"""
 
 import json
+import re
 import sys
 import os
 from datetime import datetime
@@ -19,7 +20,6 @@ def render_tool_use(block):
     name = block["name"]
     inp = block.get("input", {})
 
-    # Compact summaries for common tools
     if name == "Read":
         return f"> **Read** `{inp.get('file_path', '')}`"
     if name == "Write":
@@ -43,7 +43,6 @@ def render_tool_use(block):
         path = inp.get("filePath", "")
         return f"> **LSP** `{op}` on `{path}`"
 
-    # Generic fallback
     parts = ", ".join(f"{k}={json.dumps(v)[:80]}" for k, v in inp.items())
     return f"> **{name}** `{parts}`"
 
@@ -66,7 +65,19 @@ def render_tool_result(content):
     return preview
 
 
-def render(path):
+def find_jsonl(session_id):
+    claude_dir = os.path.expanduser("~/.claude/projects")
+    if not os.path.isdir(claude_dir):
+        return None
+    for root, dirs, files in os.walk(claude_dir):
+        for f in files:
+            if f == f"{session_id}.jsonl":
+                return os.path.join(root, f)
+    return None
+
+
+def render_session(path):
+    """Render a JSONL transcript to a list of markdown lines."""
     messages = []
     meta = {}
 
@@ -81,8 +92,6 @@ def render(path):
             if t == "user":
                 msg = obj["message"]
                 content = msg.get("content", "")
-
-                # Tool results — attach to previous assistant tool_use
                 if isinstance(content, list):
                     for block in content:
                         if block.get("type") == "tool_result":
@@ -90,7 +99,6 @@ def render(path):
                             if result_text:
                                 messages.append(("tool_result", result_text))
                     continue
-
                 if isinstance(content, str) and content.strip():
                     ts = format_timestamp(obj.get("timestamp", ""))
                     messages.append(("user", content.strip(), ts))
@@ -99,12 +107,10 @@ def render(path):
                 blocks = obj["message"].get("content", [])
                 ts = format_timestamp(obj.get("timestamp", ""))
                 model = obj["message"].get("model", "")
-
                 if not meta.get("model") and model:
                     meta["model"] = model
                 if not meta.get("start"):
                     meta["start"] = ts
-
                 for block in blocks:
                     bt = block.get("type")
                     if bt == "text":
@@ -113,74 +119,127 @@ def render(path):
                             messages.append(("assistant_text", text))
                     elif bt == "tool_use":
                         messages.append(("tool_use", render_tool_use(block)))
-                    # skip thinking blocks — they're internal
-
                 meta["end"] = ts
 
-    # --- Render markdown ---
+    out = []
     session_id = os.path.splitext(os.path.basename(path))[0]
-    print(f"# Claude Code Session")
-    if meta.get("model"):
-        print(f"**Model:** {meta['model']}")
-    if meta.get("start"):
-        print(f"**Started:** {meta['start']}")
-    print(f"**Session:** `{session_id}`\n")
-    print("---\n")
+    model = meta.get("model", "unknown")
+    started = meta.get("start", "")
+    out.append(f"### Claude Code — {model}")
+    if started:
+        out.append(f"*Session started {started}* · `{session_id}`\n")
 
     last_type = None
     for item in messages:
         kind = item[0]
-
         if kind == "user":
             _, text, ts = item
             if last_type and last_type != "user":
-                print("---\n")
-            print(f"## User\n\n{text}\n")
+                out.append("---\n")
+            out.append(f"**User:** {text}\n")
             last_type = "user"
-
         elif kind == "assistant_text":
             _, text = item
-            if last_type == "user" or last_type is None:
-                print(f"## Assistant\n")
-            print(f"{text}\n")
+            out.append(f"{text}\n")
             last_type = "assistant_text"
-
         elif kind == "tool_use":
             _, summary = item
-            print(f"{summary}\n")
+            out.append(f"{summary}\n")
             last_type = "tool_use"
-
         elif kind == "tool_result":
             _, preview = item
             if preview:
-                print(f"```\n{preview}\n```\n")
+                out.append(f"```\n{preview}\n```\n")
             last_type = "tool_result"
+
+    return "\n".join(out)
+
+
+def merge(clean_text_path):
+    """Merge a cleaned terminal recording with any Claude Code sessions found in it."""
+    with open(clean_text_path) as f:
+        lines = f.read().split("\n")
+
+    # Find all claude --resume markers
+    markers = []
+    for i, line in enumerate(lines):
+        m = re.search(r"claude --resume ([0-9a-f-]{36})", line)
+        if m:
+            markers.append((i, m.group(1)))
+
+    if not markers:
+        # No Claude sessions — return the clean text as-is
+        return "\n".join(lines)
+
+    # Build segments: (type, content)
+    segments = []
+    last_end = 0
+
+    for marker_line, session_id in markers:
+        # Scan backwards from marker past blank lines to find where Claude started
+        start = marker_line
+        while start > last_end and lines[start - 1].strip() == "":
+            start -= 1
+
+        # Consume adjacent non-blank lines that are part of Claude's output
+        # (e.g. "Resume this session with:", prompt line with `claude` command)
+        while start > last_end and lines[start - 1].strip() != "":
+            start -= 1
+
+        # Terminal section before this Claude session
+        terminal_lines = lines[last_end:start]
+        terminal_text = "\n".join(terminal_lines).strip()
+        if terminal_text:
+            segments.append(("terminal", terminal_text))
+
+        # Claude session
+        jsonl = find_jsonl(session_id)
+        if jsonl:
+            segments.append(("claude", render_session(jsonl)))
+        else:
+            # Couldn't find JSONL — keep original text
+            segments.append(("terminal", "\n".join(lines[start : marker_line + 1]).strip()))
+
+        # Advance past the marker line and any trailing blank lines
+        last_end = marker_line + 1
+        while last_end < len(lines) and lines[last_end].strip() == "":
+            last_end += 1
+
+    # Terminal section after the last Claude session
+    terminal_text = "\n".join(lines[last_end:]).strip()
+    if terminal_text:
+        segments.append(("terminal", terminal_text))
+
+    # Render merged output
+    parts = []
+    for kind, content in segments:
+        if kind == "terminal":
+            parts.append(f"```\n{content}\n```")
+        elif kind == "claude":
+            parts.append(content)
+
+    return "\n\n".join(parts) + "\n"
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: clauderec <session.jsonl>", file=sys.stderr)
-        print("       clauderec <session-id>", file=sys.stderr)
+        print("Usage: clauderec <session.jsonl|session-id>", file=sys.stderr)
+        print("       clauderec --merge <recording.txt>", file=sys.stderr)
         sys.exit(1)
 
-    arg = sys.argv[1]
-
-    # Accept either a path or a bare session ID
-    if os.path.isfile(arg):
-        render(arg)
-    else:
-        # Search for the session ID
-        claude_dir = os.path.expanduser("~/.claude/projects")
-        found = None
-        for root, dirs, files in os.walk(claude_dir):
-            for f in files:
-                if f == f"{arg}.jsonl":
-                    found = os.path.join(root, f)
-                    break
-            if found:
-                break
-        if found:
-            render(found)
-        else:
-            print(f"No JSONL found for session: {arg}", file=sys.stderr)
+    if sys.argv[1] == "--merge":
+        if len(sys.argv) < 3:
+            print("Usage: clauderec --merge <recording.txt>", file=sys.stderr)
             sys.exit(1)
+        print(merge(sys.argv[2]), end="")
+    else:
+        arg = sys.argv[1]
+        if os.path.isfile(arg):
+            print(render_session(arg))
+        else:
+            jsonl = find_jsonl(arg)
+            if jsonl:
+                print(render_session(jsonl))
+            else:
+                print(f"No JSONL found for session: {arg}", file=sys.stderr)
+                sys.exit(1)
