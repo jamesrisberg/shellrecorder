@@ -9,8 +9,11 @@ if [ -n "${_SHELLREC:-}" ]; then
   exit 1
 fi
 
+recdir="$HOME/.shellrecorder/recordings"
+mkdir -p "$recdir"
+
 file="${1:-rec_$(date +%Y%m%d_%H%M%S).txt}"
-[[ "$file" != /* ]] && file="$PWD/$file"
+[[ "$file" != /* ]] && file="$recdir/$file"
 
 tmp=$(mktemp "${TMPDIR:-/tmp}/shellrec.XXXXXX")
 rcdir=$(mktemp -d "${TMPDIR:-/tmp}/shellrec_rc.XXXXXX")
