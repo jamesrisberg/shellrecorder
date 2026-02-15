@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# rec — record a terminal session to a clean text file
+# Usage: rec [filename]
+
+set -euo pipefail
+
+if [ -n "${_SHELLREC:-}" ]; then
+  printf 'Already recording.\n'
+  exit 1
+fi
+
+file="${1:-rec_$(date +%Y%m%d_%H%M%S).txt}"
+[[ "$file" != /* ]] && file="$PWD/$file"
+
+tmp=$(mktemp "${TMPDIR:-/tmp}/shellrec.XXXXXX")
+rcdir=$(mktemp -d "${TMPDIR:-/tmp}/shellrec_rc.XXXXXX")
+shell_name=$(basename "$SHELL")
+
+cleanup() { rm -rf "$rcdir" "$tmp"; }
+trap cleanup EXIT
+
+# Snippet injected into the recording subshell
+snippet='stoprec() { exit; }
+rec() { printf "Already recording.\n"; return 1; }'
+
+case "$shell_name" in
+  zsh)
+    real_zdotdir="${ZDOTDIR:-$HOME}"
+    for f in .zshenv .zprofile .zlogin .zlogout; do
+      [ -f "$real_zdotdir/$f" ] && ln -s "$real_zdotdir/$f" "$rcdir/$f"
+    done
+    cat > "$rcdir/.zshrc" << INNER
+[ -f '${real_zdotdir}/.zshrc' ] && source '${real_zdotdir}/.zshrc'
+${snippet}
+INNER
+    ;;
+  bash)
+    cat > "$rcdir/.bashrc" << INNER
+[ -f '${HOME}/.bashrc' ] && source '${HOME}/.bashrc'
+${snippet}
+INNER
+    ;;
+esac
+
+printf 'Recording → %s\n' "$file"
+printf 'Type "stoprec" when done.\n'
+
+# Start recording
+case "$shell_name" in
+  zsh)
+    ZDOTDIR="$rcdir" _SHELLREC=1 script -q "$tmp" || true
+    ;;
+  bash)
+    if [ "$(uname -s)" = "Darwin" ]; then
+      _SHELLREC=1 script -q "$tmp" bash --rcfile "$rcdir/.bashrc" || true
+    else
+      _SHELLREC=1 script -qc "bash --rcfile '$rcdir/.bashrc'" "$tmp" || true
+    fi
+    ;;
+  *)
+    printf '(stoprec unavailable in %s — type "exit" to stop)\n' "$shell_name"
+    _SHELLREC=1 script -q "$tmp" || true
+    ;;
+esac
+
+# Strip escape sequences, process carriage returns, and clean backspaces
+perl -pe '
+  s/\e\[ [?>=<]* [0-9;]* [a-zA-Z~]//gx;   # CSI sequences (colors, modes, cursor)
+  s/\e\] .*? (?:\a|\e\\)//gx;              # OSC sequences (titles, hyperlinks)
+  s/\e[()][A-Z0-9]//g;                     # charset selection
+  s/\e[a-zA-Z]//g;                         # two-char escapes
+  s/^.*\r(?!\n)//;                          # carriage return overwrites (PROMPT_EOL_MARK etc)
+  s/\r//g;                                  # remaining \r
+' < "$tmp" | col -b > "$file"
+
+printf 'Saved → %s (%s lines)\n' "$file" "$(wc -l < "$file" | tr -d ' ')"
