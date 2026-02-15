@@ -9,7 +9,23 @@ if [ -n "${_SHELLREC:-}" ]; then
   exit 1
 fi
 
+conffile="$HOME/.shellrecorder/config"
 recdir="$HOME/.shellrecorder/recordings"
+if [ ! -f "$conffile" ]; then
+  mkdir -p "$(dirname "$conffile")"
+  printf 'recordings_dir=~/.shellrecorder/recordings\n' > "$conffile"
+fi
+if [ -f "$conffile" ]; then
+  while IFS='=' read -r key val; do
+    key="${key%%#*}"                # strip inline comments
+    key="$(echo "$key" | xargs)"   # trim whitespace
+    val="$(echo "$val" | xargs)"
+    [ -z "$key" ] && continue
+    case "$key" in
+      recordings_dir) recdir="${val/#\~/$HOME}" ;;
+    esac
+  done < "$conffile"
+fi
 mkdir -p "$recdir"
 
 name="${1:-rec_$(date +%Y%m%d_%H%M%S)}"

@@ -21,6 +21,18 @@ stoprec          # stop and save
 
 Recordings are saved to `~/.shellrecorder/recordings/` by default. Pass an absolute path to save elsewhere.
 
+## Configuration
+
+Settings live in `~/.shellrecorder/config` (created automatically on first run):
+
+```
+recordings_dir=~/.shellrecorder/recordings
+```
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `recordings_dir` | Directory where recordings are saved | `~/.shellrecorder/recordings` |
+
 Each recording produces two files:
 - `.md` — clean, readable output (terminal commands + output, Claude Code sessions rendered as markdown)
 - `.raw` — raw terminal capture
