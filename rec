@@ -19,7 +19,9 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/shellrec.XXXXXX")
 rcdir=$(mktemp -d "${TMPDIR:-/tmp}/shellrec_rc.XXXXXX")
 shell_name=$(basename "$SHELL")
 
-cleanup() { rm -rf "$rcdir" "$tmp"; }
+rawfile="${file%.txt}.raw"
+
+cleanup() { rm -rf "$rcdir"; }
 trap cleanup EXIT
 
 # Snippet injected into the recording subshell
@@ -76,4 +78,8 @@ perl -pe '
   s/\r//g;                                  # remaining \r
 ' < "$tmp" | col -b > "$file"
 
+cp "$tmp" "$rawfile"
+rm -f "$tmp"
+
 printf 'Saved → %s (%s lines)\n' "$file" "$(wc -l < "$file" | tr -d ' ')"
+printf 'Raw   → %s\n' "$rawfile"
